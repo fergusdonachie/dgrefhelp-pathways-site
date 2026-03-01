@@ -382,13 +382,21 @@ input {
   background: rgba(255, 255, 255, 0.05);
 }
 
+.section-header {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  align-items: center;
+  gap: 12px;
+  padding: 12px 14px 0;
+}
+
 .section-toggle {
   width: 100%;
   display: flex;
   justify-content: space-between;
   align-items: center;
   gap: 12px;
-  padding: 18px 20px;
+  padding: 6px 6px 10px;
   border: 0;
   background: transparent;
   color: inherit;
@@ -398,6 +406,22 @@ input {
 
 .section-toggle-static {
   cursor: default;
+}
+
+.copy-button {
+  padding: 9px 12px;
+  border-radius: 999px;
+  border: 1px solid rgba(255, 255, 255, 0.09);
+  background: rgba(255, 255, 255, 0.05);
+  color: var(--text-dim);
+  cursor: pointer;
+  white-space: nowrap;
+}
+
+.copy-button.copied {
+  color: var(--text);
+  background: rgba(152, 210, 202, 0.14);
+  border-color: rgba(152, 210, 202, 0.34);
 }
 
 .section-toggle span:first-child {
@@ -544,6 +568,10 @@ input {
 
   .view-tab {
     flex: 1;
+  }
+
+  .section-header {
+    grid-template-columns: 1fr;
   }
 
   .source-link {

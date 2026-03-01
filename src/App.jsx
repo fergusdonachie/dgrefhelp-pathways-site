@@ -132,13 +132,22 @@ function navigate(url) {
   window.dispatchEvent(new PopStateEvent('popstate'))
 }
 
-function SectionCard({ section, isOpen, onToggle }) {
+async function copyHtmlToClipboard(html) {
+  await navigator.clipboard.writeText(html)
+}
+
+function SectionCard({ copied, onCopy, section, isOpen, onToggle }) {
   return (
     <article className={`section-card ${isOpen ? 'open' : ''}`}>
-      <button className="section-toggle" onClick={onToggle} type="button">
-        <span>{section.heading}</span>
-        <span className="section-icon">{isOpen ? '−' : '+'}</span>
-      </button>
+      <div className="section-header">
+        <button className="section-toggle" onClick={onToggle} type="button">
+          <span>{section.heading}</span>
+          <span className="section-icon">{isOpen ? '−' : '+'}</span>
+        </button>
+        <button className={`copy-button ${copied ? 'copied' : ''}`} onClick={onCopy} type="button">
+          {copied ? 'Copied' : 'Copy HTML'}
+        </button>
+      </div>
       {isOpen ? (
         <div
           className="rich-copy section-body"
@@ -151,11 +160,16 @@ function SectionCard({ section, isOpen, onToggle }) {
   )
 }
 
-function StaticSectionCard({ heading, html }) {
+function StaticSectionCard({ copied, heading, html, onCopy }) {
   return (
     <article className="section-card open">
-      <div className="section-toggle section-toggle-static">
-        <span>{heading}</span>
+      <div className="section-header">
+        <div className="section-toggle section-toggle-static">
+          <span>{heading}</span>
+        </div>
+        <button className={`copy-button ${copied ? 'copied' : ''}`} onClick={onCopy} type="button">
+          {copied ? 'Copied' : 'Copy HTML'}
+        </button>
       </div>
       <div
         className="rich-copy section-body"
@@ -261,8 +275,10 @@ function DetailPage({
   activePathway,
   activeView,
   activeReviewHtml,
+  copiedSection,
   onBack,
   onChangeView,
+  onCopySection,
   openSections,
   onToggleSection,
 }) {
@@ -317,10 +333,17 @@ function DetailPage({
         <main className="detail-layout">
           <section className="sections-panel">
             <div className="section-stack">
-              <StaticSectionCard heading="Background" html={activePathway.summaryHtml} />
+              <StaticSectionCard
+                copied={copiedSection === `${activePathway.id}:Background`}
+                heading="Background"
+                html={activePathway.summaryHtml}
+                onCopy={() => onCopySection(`${activePathway.id}:Background`, activePathway.summaryHtml)}
+              />
               {activePathway.sections.map((section) => (
                 <SectionCard
+                  copied={copiedSection === `${activePathway.id}:${section.heading}`}
                   key={section.heading}
+                  onCopy={() => onCopySection(`${activePathway.id}:${section.heading}`, section.html)}
                   section={section}
                   isOpen={Boolean(sectionState[section.heading])}
                   onToggle={() => onToggleSection(section.heading)}
@@ -357,6 +380,7 @@ function App() {
   const [pathways, setPathways] = useState([])
   const [route, setRoute] = useState(parseLocation)
   const [openSections, setOpenSections] = useState({})
+  const [copiedSection, setCopiedSection] = useState('')
   const [status, setStatus] = useState({ type: 'loading', message: 'Loading pathways from GitHub…' })
 
   useEffect(() => {
@@ -459,6 +483,21 @@ function App() {
     }))
   }
 
+  async function handleCopySection(sectionKey, html) {
+    try {
+      await copyHtmlToClipboard(html)
+      setCopiedSection(sectionKey)
+      window.setTimeout(() => {
+        setCopiedSection((current) => (current === sectionKey ? '' : current))
+      }, 1400)
+    } catch {
+      setStatus({
+        type: 'error',
+        message: 'Unable to copy HTML to clipboard in this browser.',
+      })
+    }
+  }
+
   return (
     <div className="shell">
       <div className="ambient ambient-left" />
@@ -482,8 +521,10 @@ function App() {
             activePathway={activePathway}
             activeReviewHtml={activeReviewHtml}
             activeView={route.view}
+            copiedSection={copiedSection}
             onBack={() => navigate('/')}
             onChangeView={(view) => openPathway(activePathway.slug, view)}
+            onCopySection={handleCopySection}
             onToggleSection={toggleSection}
             openSections={openSections}
           />
