@@ -172,10 +172,10 @@ function HomePage({ pathways, onOpenPathway }) {
       <header className="hero hero-home">
         <div className="hero-copy">
           <p className="eyebrow">DG RefHelp Pathways</p>
-          <h1>A cleaner pathway directory built for scale.</h1>
+          <h1>Referral pathways for primary care.</h1>
           <p className="lede">
-            Browse a compact list of pathways, then open a dedicated page for the pathway itself or
-            its evidence summary.
+            Browse current referral pathways and open each topic for practical guidance and its
+            supporting evidence summary.
           </p>
         </div>
 
@@ -300,12 +300,9 @@ function DetailPage({
 
       {activeView === 'pathway' ? (
         <main className="detail-layout">
-          <section className="intro-card">
-            <div className="panel-head">
-              <div>
-                <p className="eyebrow">Introduction</p>
-                <h3>Page contents</h3>
-              </div>
+          <section className="sections-panel">
+            <div className="panel-head panel-head-simple">
+              <h3>Background</h3>
             </div>
             <div
               className="rich-copy intro-copy"
@@ -316,13 +313,6 @@ function DetailPage({
           </section>
 
           <section className="sections-panel">
-            <div className="panel-head">
-              <div>
-                <p className="eyebrow">Pathway detail</p>
-                <h3>Accordion sections</h3>
-              </div>
-            </div>
-
             <div className="section-stack">
               {activePathway.sections.map((section) => (
                 <SectionCard

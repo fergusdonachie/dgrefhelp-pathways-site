@@ -365,6 +365,10 @@ input {
   margin-bottom: 16px;
 }
 
+.panel-head-simple {
+  margin-bottom: 18px;
+}
+
 .section-stack {
   display: grid;
   gap: 12px;
