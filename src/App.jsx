@@ -278,7 +278,6 @@ function DetailPage({
         <div className="detail-headline">
           <p className="eyebrow">Referral pathway</p>
           <h1>{activePathway.title}</h1>
-          <p className="lede detail-lede">{activePathway.summaryText}</p>
         </div>
 
         <div className="detail-actions">
