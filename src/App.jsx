@@ -151,6 +151,22 @@ function SectionCard({ section, isOpen, onToggle }) {
   )
 }
 
+function StaticSectionCard({ heading, html }) {
+  return (
+    <article className="section-card open">
+      <div className="section-toggle section-toggle-static">
+        <span>{heading}</span>
+      </div>
+      <div
+        className="rich-copy section-body"
+        dangerouslySetInnerHTML={{
+          __html: DOMPurify.sanitize(html),
+        }}
+      />
+    </article>
+  )
+}
+
 function HomePage({ pathways, onOpenPathway }) {
   const [query, setQuery] = useState('')
 
@@ -301,19 +317,8 @@ function DetailPage({
       {activeView === 'pathway' ? (
         <main className="detail-layout">
           <section className="sections-panel">
-            <div className="panel-head panel-head-simple">
-              <h3>Background</h3>
-            </div>
-            <div
-              className="rich-copy intro-copy"
-              dangerouslySetInnerHTML={{
-                __html: DOMPurify.sanitize(activePathway.summaryHtml),
-              }}
-            />
-          </section>
-
-          <section className="sections-panel">
             <div className="section-stack">
+              <StaticSectionCard heading="Background" html={activePathway.summaryHtml} />
               {activePathway.sections.map((section) => (
                 <SectionCard
                   key={section.heading}
@@ -331,7 +336,6 @@ function DetailPage({
             <div className="panel-head">
               <div>
                 <p className="eyebrow">Evidence summary</p>
-                <h3>Clinician review pack</h3>
               </div>
             </div>
 

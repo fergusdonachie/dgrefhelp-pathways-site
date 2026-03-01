@@ -365,10 +365,6 @@ input {
   margin-bottom: 16px;
 }
 
-.panel-head-simple {
-  margin-bottom: 18px;
-}
-
 .section-stack {
   display: grid;
   gap: 12px;
@@ -398,6 +394,10 @@ input {
   color: inherit;
   text-align: left;
   cursor: pointer;
+}
+
+.section-toggle-static {
+  cursor: default;
 }
 
 .section-toggle span:first-child {
