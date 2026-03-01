@@ -4,9 +4,7 @@ import { marked } from 'marked'
 
 const REPO_OWNER = 'fergusdonachie'
 const REPO_NAME = 'dgrefhelp-pathways'
-const BRANCH = 'main'
 const API_ROOT = `https://api.github.com/repos/${REPO_OWNER}/${REPO_NAME}`
-const RAW_ROOT = `https://raw.githubusercontent.com/${REPO_OWNER}/${REPO_NAME}/${BRANCH}`
 
 marked.setOptions({
   breaks: true,
@@ -73,20 +71,26 @@ async function fetchText(url) {
   return response.text()
 }
 
+function rawUrl(branch, path) {
+  return `https://raw.githubusercontent.com/${REPO_OWNER}/${REPO_NAME}/${branch}/${path}`
+}
+
 async function discoverPathways() {
-  const tree = await fetchJson(`${API_ROOT}/git/trees/${BRANCH}?recursive=1`)
+  const repository = await fetchJson(API_ROOT)
+  const branch = repository.default_branch
+  const tree = await fetchJson(`${API_ROOT}/git/trees/${branch}?recursive=1`)
   const bundleCandidates = pickLatestBundles(
     tree.tree.filter((entry) => entry.type === 'blob').map((entry) => entry.path),
   )
 
   const pathways = await Promise.all(
     bundleCandidates.map(async ({ pathwaySlug, version, bundlePath }) => {
-      const bundle = await fetchJson(`${RAW_ROOT}/${bundlePath}`)
+      const bundle = await fetchJson(rawUrl(branch, bundlePath))
       const reviewPackPath = `pathways/${pathwaySlug}/${version}/drafts/review-pack.md`
       let reviewPack = ''
 
       try {
-        reviewPack = await fetchText(`${RAW_ROOT}/${reviewPackPath}`)
+        reviewPack = await fetchText(rawUrl(branch, reviewPackPath))
       } catch {
         reviewPack = ''
       }
@@ -108,6 +112,7 @@ async function discoverPathways() {
         reviewPack,
         referralHighlights: referralSection ? stripHtml(referralSection.html) : '',
         rawBundlePath: bundlePath,
+        branch,
       }
     }),
   )
@@ -295,7 +300,7 @@ function App() {
                 </div>
                 <a
                   className="source-link"
-                  href={`${RAW_ROOT}/${activePathway.rawBundlePath}`}
+                  href={rawUrl(activePathway.branch, activePathway.rawBundlePath)}
                   target="_blank"
                   rel="noreferrer"
                 >
