@@ -11,13 +11,6 @@ marked.setOptions({
   gfm: true,
 })
 
-function slugify(value) {
-  return value
-    .toLowerCase()
-    .replace(/[^a-z0-9]+/g, '-')
-    .replace(/^-|-$/g, '')
-}
-
 function formatPathwayName(slug) {
   return slug
     .split('-')
@@ -75,6 +68,24 @@ function rawUrl(branch, path) {
   return `https://raw.githubusercontent.com/${REPO_OWNER}/${REPO_NAME}/${branch}/${path}`
 }
 
+function parseLocation() {
+  const { pathname, search } = window.location
+  const segments = pathname.replace(/^\/+|\/+$/g, '').split('/').filter(Boolean)
+  const searchParams = new URLSearchParams(search)
+
+  if (segments[0] === 'pathway' && segments[1]) {
+    const view = searchParams.get('view') === 'evidence' ? 'evidence' : 'pathway'
+    return { page: 'pathway', slug: decodeURIComponent(segments[1]), view }
+  }
+
+  return { page: 'home', view: 'pathway' }
+}
+
+function makePathwayUrl(slug, view = 'pathway') {
+  const search = view === 'evidence' ? '?view=evidence' : ''
+  return `/pathway/${encodeURIComponent(slug)}${search}`
+}
+
 async function discoverPathways() {
   const repository = await fetchJson(API_ROOT)
   const branch = repository.default_branch
@@ -96,21 +107,17 @@ async function discoverPathways() {
       }
 
       const summaryText = stripHtml(bundle.page_contents_html)
-      const referralSection = bundle.accordion_sections.find((section) =>
-        /who to refer/i.test(section.heading),
-      )
 
       return {
         id: pathwaySlug,
         slug: pathwaySlug,
-        title: bundle.topic ? formatPathwayName(slugify(bundle.topic)) : formatPathwayName(pathwaySlug),
+        title: formatPathwayName(pathwaySlug),
         topic: bundle.topic || formatPathwayName(pathwaySlug),
         version,
         summaryText,
         summaryHtml: bundle.page_contents_html,
         sections: bundle.accordion_sections,
         reviewPack,
-        referralHighlights: referralSection ? stripHtml(referralSection.html) : '',
         rawBundlePath: bundlePath,
         branch,
       }
@@ -118,6 +125,11 @@ async function discoverPathways() {
   )
 
   return pathways
+}
+
+function navigate(url) {
+  window.history.pushState({}, '', url)
+  window.dispatchEvent(new PopStateEvent('popstate'))
 }
 
 function SectionCard({ section, isOpen, onToggle }) {
@@ -129,7 +141,7 @@ function SectionCard({ section, isOpen, onToggle }) {
       </button>
       {isOpen ? (
         <div
-          className="rich-copy"
+          className="rich-copy section-body"
           dangerouslySetInnerHTML={{
             __html: DOMPurify.sanitize(section.html),
           }}
@@ -139,11 +151,229 @@ function SectionCard({ section, isOpen, onToggle }) {
   )
 }
 
+function HomePage({ pathways, onOpenPathway }) {
+  const [query, setQuery] = useState('')
+
+  const filteredPathways = useMemo(() => {
+    const normalizedQuery = query.trim().toLowerCase()
+    if (!normalizedQuery) {
+      return pathways
+    }
+
+    return pathways.filter((pathway) =>
+      [pathway.title, pathway.topic, pathway.summaryText].some((field) =>
+        field.toLowerCase().includes(normalizedQuery),
+      ),
+    )
+  }, [pathways, query])
+
+  return (
+    <>
+      <header className="hero hero-home">
+        <div className="hero-copy">
+          <p className="eyebrow">DG RefHelp Pathways</p>
+          <h1>A cleaner pathway directory built for scale.</h1>
+          <p className="lede">
+            Browse a compact list of pathways, then open a dedicated page for the pathway itself or
+            its evidence summary.
+          </p>
+        </div>
+
+        <div className="hero-panel">
+          <p className="eyebrow">Source</p>
+          <p className="source-summary">
+            Live content pulled from{' '}
+            <a href={`https://github.com/${REPO_OWNER}/${REPO_NAME}`} target="_blank" rel="noreferrer">
+              {REPO_OWNER}/{REPO_NAME}
+            </a>
+            .
+          </p>
+          <div className="stat-row">
+            <div className="metric">
+              <span className="metric-value">{String(pathways.length).padStart(2, '0')}</span>
+              <span className="metric-label">Pathways</span>
+            </div>
+            <div className="metric">
+              <span className="metric-value">2</span>
+              <span className="metric-label">Views per pathway</span>
+            </div>
+          </div>
+        </div>
+      </header>
+
+      <section className="directory-panel">
+        <div className="directory-head">
+          <div>
+            <p className="eyebrow">Directory</p>
+            <h2>Referral pathways</h2>
+          </div>
+          <label className="search-shell">
+            <span className="search-label">Search pathways</span>
+            <input
+              className="search-input"
+              onChange={(event) => setQuery(event.target.value)}
+              placeholder="Frailty, hypertension, liver..."
+              type="search"
+              value={query}
+            />
+          </label>
+        </div>
+
+        <div className="directory-grid">
+          {filteredPathways.map((pathway) => (
+            <button
+              className="directory-item"
+              key={pathway.id}
+              onClick={() => onOpenPathway(pathway.slug)}
+              type="button"
+            >
+              <span className="directory-title">{pathway.title}</span>
+              <span className="directory-arrow">Open</span>
+            </button>
+          ))}
+        </div>
+
+        {filteredPathways.length === 0 ? (
+          <p className="empty-state">No pathways matched that search.</p>
+        ) : null}
+      </section>
+    </>
+  )
+}
+
+function DetailPage({
+  activePathway,
+  activeView,
+  activeReviewHtml,
+  onBack,
+  onChangeView,
+  openSections,
+  onToggleSection,
+}) {
+  const sectionState = openSections[activePathway.id] || {}
+
+  return (
+    <>
+      <header className="detail-hero">
+        <button className="back-link" onClick={onBack} type="button">
+          All pathways
+        </button>
+
+        <div className="detail-headline">
+          <p className="eyebrow">Referral pathway</p>
+          <h1>{activePathway.title}</h1>
+          <p className="lede detail-lede">{activePathway.summaryText}</p>
+        </div>
+
+        <div className="detail-actions">
+          <div className="view-switcher" role="tablist" aria-label="Pathway views">
+            <button
+              aria-selected={activeView === 'pathway'}
+              className={`view-tab ${activeView === 'pathway' ? 'active' : ''}`}
+              onClick={() => onChangeView('pathway')}
+              role="tab"
+              type="button"
+            >
+              Pathway
+            </button>
+            <button
+              aria-selected={activeView === 'evidence'}
+              className={`view-tab ${activeView === 'evidence' ? 'active' : ''}`}
+              onClick={() => onChangeView('evidence')}
+              role="tab"
+              type="button"
+            >
+              Evidence
+            </button>
+          </div>
+
+          <a
+            className="source-link"
+            href={rawUrl(activePathway.branch, activePathway.rawBundlePath)}
+            target="_blank"
+            rel="noreferrer"
+          >
+            View source bundle
+          </a>
+        </div>
+      </header>
+
+      {activeView === 'pathway' ? (
+        <main className="detail-layout">
+          <section className="intro-card">
+            <div className="panel-head">
+              <div>
+                <p className="eyebrow">Introduction</p>
+                <h3>Page contents</h3>
+              </div>
+            </div>
+            <div
+              className="rich-copy intro-copy"
+              dangerouslySetInnerHTML={{
+                __html: DOMPurify.sanitize(activePathway.summaryHtml),
+              }}
+            />
+          </section>
+
+          <section className="sections-panel">
+            <div className="panel-head">
+              <div>
+                <p className="eyebrow">Pathway detail</p>
+                <h3>Accordion sections</h3>
+              </div>
+            </div>
+
+            <div className="section-stack">
+              {activePathway.sections.map((section) => (
+                <SectionCard
+                  key={section.heading}
+                  section={section}
+                  isOpen={Boolean(sectionState[section.heading])}
+                  onToggle={() => onToggleSection(section.heading)}
+                />
+              ))}
+            </div>
+          </section>
+        </main>
+      ) : (
+        <main className="detail-layout evidence-layout">
+          <section className="evidence-card">
+            <div className="panel-head">
+              <div>
+                <p className="eyebrow">Evidence summary</p>
+                <h3>Clinician review pack</h3>
+              </div>
+            </div>
+
+            {activeReviewHtml ? (
+              <div
+                className="markdown-copy"
+                dangerouslySetInnerHTML={{ __html: activeReviewHtml }}
+              />
+            ) : (
+              <p className="empty-state">No review pack found for this pathway version.</p>
+            )}
+          </section>
+        </main>
+      )}
+    </>
+  )
+}
+
 function App() {
   const [pathways, setPathways] = useState([])
-  const [activeId, setActiveId] = useState('')
+  const [route, setRoute] = useState(parseLocation)
   const [openSections, setOpenSections] = useState({})
   const [status, setStatus] = useState({ type: 'loading', message: 'Loading pathways from GitHub…' })
+
+  useEffect(() => {
+    function handlePopState() {
+      setRoute(parseLocation())
+    }
+
+    window.addEventListener('popstate', handlePopState)
+    return () => window.removeEventListener('popstate', handlePopState)
+  }, [])
 
   useEffect(() => {
     let cancelled = false
@@ -155,7 +385,6 @@ function App() {
         }
 
         setPathways(items)
-        setActiveId(items[0]?.id ?? '')
         setStatus({ type: 'ready', message: '' })
       })
       .catch((error) => {
@@ -174,10 +403,13 @@ function App() {
     }
   }, [])
 
-  const activePathway = useMemo(
-    () => pathways.find((pathway) => pathway.id === activeId) ?? pathways[0] ?? null,
-    [activeId, pathways],
-  )
+  const activePathway = useMemo(() => {
+    if (route.page !== 'pathway') {
+      return null
+    }
+
+    return pathways.find((pathway) => pathway.slug === route.slug) ?? null
+  }, [pathways, route])
 
   useEffect(() => {
     if (!activePathway) {
@@ -199,6 +431,15 @@ function App() {
     })
   }, [activePathway])
 
+  useEffect(() => {
+    if (route.page === 'pathway' && activePathway) {
+      document.title = `${activePathway.title} | DG RefHelp Pathways`
+      return
+    }
+
+    document.title = 'DG RefHelp Pathways'
+  }, [activePathway, route.page])
+
   const activeReviewHtml = useMemo(() => {
     if (!activePathway?.reviewPack) {
       return ''
@@ -207,14 +448,9 @@ function App() {
     return DOMPurify.sanitize(marked.parse(activePathway.reviewPack))
   }, [activePathway])
 
-  const stats = useMemo(() => {
-    const sectionCount = pathways.reduce((total, pathway) => total + pathway.sections.length, 0)
-    return [
-      { label: 'Live pathways', value: String(pathways.length).padStart(2, '0') },
-      { label: 'Structured sections', value: String(sectionCount).padStart(2, '0') },
-      { label: 'Content source', value: 'GitHub' },
-    ]
-  }, [pathways])
+  function openPathway(slug, view = 'pathway') {
+    navigate(makePathwayUrl(slug, view))
+  }
 
   function toggleSection(heading) {
     if (!activePathway) {
@@ -235,132 +471,40 @@ function App() {
       <div className="ambient ambient-left" />
       <div className="ambient ambient-right" />
 
-      <header className="hero">
-        <div className="hero-copy">
-          <p className="eyebrow">DG RefHelp Pathways</p>
-          <h1>Referral pathways with the evidence pack beside the decision.</h1>
-          <p className="lede">
-            A React frontend that discovers the latest pathway bundles from
-            <a href={`https://github.com/${REPO_OWNER}/${REPO_NAME}`} target="_blank" rel="noreferrer">
-              {' '}
-              {REPO_OWNER}/{REPO_NAME}
-            </a>
-            , then renders the pathway summary, referral logic, and clinician review pack in one place.
-          </p>
-        </div>
+      <div className="page-frame">
+        {status.type === 'loading' ? <div className="message-panel">{status.message}</div> : null}
+        {status.type === 'error' ? (
+          <div className="message-panel error">
+            <p>Unable to load pathway content from GitHub.</p>
+            <p>{status.message}</p>
+          </div>
+        ) : null}
 
-        <div className="stat-grid">
-          {stats.map((stat) => (
-            <div className="stat-card" key={stat.label}>
-              <span className="stat-value">{stat.value}</span>
-              <span className="stat-label">{stat.label}</span>
-            </div>
-          ))}
-        </div>
-      </header>
+        {status.type === 'ready' && route.page === 'home' ? (
+          <HomePage pathways={pathways} onOpenPathway={openPathway} />
+        ) : null}
 
-      {status.type === 'loading' ? <div className="message-panel">{status.message}</div> : null}
-      {status.type === 'error' ? (
-        <div className="message-panel error">
-          <p>Unable to load pathway content from GitHub.</p>
-          <p>{status.message}</p>
-        </div>
-      ) : null}
+        {status.type === 'ready' && route.page === 'pathway' && activePathway ? (
+          <DetailPage
+            activePathway={activePathway}
+            activeReviewHtml={activeReviewHtml}
+            activeView={route.view}
+            onBack={() => navigate('/')}
+            onChangeView={(view) => openPathway(activePathway.slug, view)}
+            onToggleSection={toggleSection}
+            openSections={openSections}
+          />
+        ) : null}
 
-      {activePathway ? (
-        <main className="layout">
-          <aside className="pathway-rail">
-            <div className="rail-header">
-              <p className="eyebrow">Pathways</p>
-              <h2>Latest published bundles</h2>
-            </div>
-
-            <div className="pathway-list">
-              {pathways.map((pathway) => (
-                <button
-                  className={`pathway-card ${pathway.id === activePathway.id ? 'active' : ''}`}
-                  key={pathway.id}
-                  onClick={() => setActiveId(pathway.id)}
-                  type="button"
-                >
-                  <span className="pathway-title">{formatPathwayName(pathway.slug)}</span>
-                  <span className="pathway-meta">{pathway.version}</span>
-                  <span className="pathway-summary">{pathway.summaryText}</span>
-                </button>
-              ))}
-            </div>
-          </aside>
-
-          <section className="content-column">
-            <section className="feature-card">
-              <div className="feature-head">
-                <div>
-                  <p className="eyebrow">Current pathway</p>
-                  <h2>{formatPathwayName(activePathway.slug)}</h2>
-                </div>
-                <a
-                  className="source-link"
-                  href={rawUrl(activePathway.branch, activePathway.rawBundlePath)}
-                  target="_blank"
-                  rel="noreferrer"
-                >
-                  View source bundle
-                </a>
-              </div>
-
-              <div
-                className="rich-copy intro-copy"
-                dangerouslySetInnerHTML={{
-                  __html: DOMPurify.sanitize(activePathway.summaryHtml),
-                }}
-              />
-
-              {activePathway.referralHighlights ? (
-                <div className="highlight-panel">
-                  <p className="eyebrow">Referral focus</p>
-                  <p>{activePathway.referralHighlights}</p>
-                </div>
-              ) : null}
-            </section>
-
-            <section className="sections-panel">
-              <div className="panel-head">
-                <p className="eyebrow">Pathway structure</p>
-                <h3>Accordion sections</h3>
-              </div>
-
-              <div className="section-stack">
-                {activePathway.sections.map((section) => (
-                  <SectionCard
-                    key={section.heading}
-                    section={section}
-                    isOpen={Boolean(openSections[activePathway.id]?.[section.heading])}
-                    onToggle={() => toggleSection(section.heading)}
-                  />
-                ))}
-              </div>
-            </section>
+        {status.type === 'ready' && route.page === 'pathway' && !activePathway ? (
+          <section className="message-panel">
+            <p>That pathway could not be found.</p>
+            <button className="back-link" onClick={() => navigate('/')} type="button">
+              Return to directory
+            </button>
           </section>
-
-          <section className="evidence-column">
-            <section className="evidence-card">
-              <div className="panel-head">
-                <p className="eyebrow">Evidence summary</p>
-                <h3>Clinician review pack</h3>
-              </div>
-
-              {activeReviewHtml ? (
-                <div
-                  className="markdown-copy"
-                  dangerouslySetInnerHTML={{ __html: activeReviewHtml }}
-                />
-              ) : (
-                <p className="empty-state">No review pack found for this pathway version.</p>
-              )}
-            </section>
-          </section>
-        </main>
-      ) : null}
+        ) : null}
+      </div>
     </div>
   )
 }
