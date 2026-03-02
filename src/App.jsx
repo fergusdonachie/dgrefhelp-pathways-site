@@ -42,8 +42,8 @@ function normalizeSections(sections) {
     .filter((section) => section.html.trim())
 }
 
-function pickLatestBundles(paths) {
-  const latestByPathway = new Map()
+function groupBundlesByPathway(paths) {
+  const bundlesByPathway = new Map()
 
   for (const path of paths) {
     const match = path.match(/^pathways\/([^/]+)\/([^/]+)\/outputs\/cms-upload-bundle\.json$/)
@@ -52,14 +52,105 @@ function pickLatestBundles(paths) {
     }
 
     const [, pathwaySlug, version] = match
-    const current = latestByPathway.get(pathwaySlug)
-
-    if (!current || version.localeCompare(current.version) > 0) {
-      latestByPathway.set(pathwaySlug, { pathwaySlug, version, bundlePath: path })
-    }
+    const current = bundlesByPathway.get(pathwaySlug) || []
+    current.push({ pathwaySlug, version, bundlePath: path })
+    bundlesByPathway.set(pathwaySlug, current)
   }
 
-  return [...latestByPathway.values()].sort((left, right) =>
+  return bundlesByPathway
+}
+
+function parseVersionTimestamp(version) {
+  const match = safeText(version).match(/^(\d{8})-(\d{4})(?:-v(\d+))?$/i)
+  if (!match) {
+    return null
+  }
+
+  const [, datePart, timePart, revision = '0'] = match
+  const year = Number(datePart.slice(0, 4))
+  const month = Number(datePart.slice(4, 6)) - 1
+  const day = Number(datePart.slice(6, 8))
+  const hours = Number(timePart.slice(0, 2))
+  const minutes = Number(timePart.slice(2, 4))
+  const revisionNumber = Number(revision)
+
+  return {
+    sortValue: Date.UTC(year, month, day, hours, minutes),
+    revision: Number.isFinite(revisionNumber) ? revisionNumber : 0,
+  }
+}
+
+function compareByVersionName(left, right) {
+  const leftParsed = parseVersionTimestamp(left.version)
+  const rightParsed = parseVersionTimestamp(right.version)
+
+  if (leftParsed && rightParsed) {
+    if (leftParsed.sortValue !== rightParsed.sortValue) {
+      return rightParsed.sortValue - leftParsed.sortValue
+    }
+
+    if (leftParsed.revision !== rightParsed.revision) {
+      return rightParsed.revision - leftParsed.revision
+    }
+  } else if (leftParsed || rightParsed) {
+    return leftParsed ? -1 : 1
+  }
+
+  return right.version.localeCompare(left.version)
+}
+
+async function fetchLatestCommitTimestamp(branch, path) {
+  const commits = await fetchJson(
+    `${API_ROOT}/commits?sha=${encodeURIComponent(branch)}&path=${encodeURIComponent(path)}&per_page=1`,
+  )
+
+  const commitDate = commits?.[0]?.commit?.committer?.date || commits?.[0]?.commit?.author?.date
+  const timestamp = commitDate ? Date.parse(commitDate) : 0
+  return Number.isFinite(timestamp) ? timestamp : 0
+}
+
+async function pickLatestBundles(paths, branch) {
+  const bundlesByPathway = groupBundlesByPathway(paths)
+
+  const selectedBundles = await Promise.all(
+    [...bundlesByPathway.values()].map(async (candidates) => {
+      if (candidates.length === 1) {
+        return candidates[0]
+      }
+
+      const sortedCandidates = [...candidates].sort(compareByVersionName)
+      const [first, second] = sortedCandidates
+      const firstParsed = parseVersionTimestamp(first.version)
+      const secondParsed = parseVersionTimestamp(second.version)
+
+      if (
+        firstParsed &&
+        secondParsed &&
+        (firstParsed.sortValue !== secondParsed.sortValue || firstParsed.revision !== secondParsed.revision)
+      ) {
+        return first
+      }
+
+      const commitTimes = await Promise.all(
+        sortedCandidates.map(async (candidate) => ({
+          candidate,
+          commitTimestamp: await fetchLatestCommitTimestamp(branch, candidate.bundlePath),
+        })),
+      )
+
+      commitTimes.sort((left, right) => {
+        if (right.commitTimestamp !== left.commitTimestamp) {
+          return right.commitTimestamp - left.commitTimestamp
+        }
+
+        return compareByVersionName(left.candidate, right.candidate)
+      })
+
+      return commitTimes[0].candidate
+    }),
+  )
+
+  return selectedBundles.sort((left, right) =>
     formatPathwayName(left.pathwaySlug).localeCompare(formatPathwayName(right.pathwaySlug)),
   )
 }
@@ -110,8 +201,9 @@ async function discoverPathways() {
   const repository = await fetchJson(API_ROOT)
   const branch = repository.default_branch
   const tree = await fetchJson(`${API_ROOT}/git/trees/${branch}?recursive=1`)
-  const bundleCandidates = pickLatestBundles(
+  const bundleCandidates = await pickLatestBundles(
     tree.tree.filter((entry) => entry.type === 'blob').map((entry) => entry.path),
+    branch,
   )
 
   const pathwayResults = await Promise.all(
