@@ -42,6 +42,17 @@ function normalizeSections(sections) {
     .filter((section) => section.html.trim())
 }
 
+function normalizeRunSlug(runSlug) {
+  return safeText(runSlug).replace(/-(wide-search|staged)$/i, '')
+}
+
+function escapeHtml(value) {
+  return safeText(value)
+    .replaceAll('&', '&amp;')
+    .replaceAll('<', '&lt;')
+    .replaceAll('>', '&gt;')
+}
+
 function groupBundlesByPathway(paths) {
   const bundlesByPathway = new Map()
 
@@ -58,6 +69,35 @@ function groupBundlesByPathway(paths) {
   }
 
   return bundlesByPathway
+}
+
+function groupPathwayRuns(paths) {
+  const runsByPathway = new Map()
+
+  for (const path of paths) {
+    const match = path.match(/^pathway_runs\/([^/]+)\/(05_review_pack\.md|06_rds_blocks\.json)$/)
+    if (!match) {
+      continue
+    }
+
+    const [, runSlug, filename] = match
+    const pathwaySlug = normalizeRunSlug(runSlug)
+    const current = runsByPathway.get(pathwaySlug) || { pathwaySlug, runSlug }
+
+    if (filename === '05_review_pack.md') {
+      current.reviewPackPath = path
+    }
+
+    if (filename === '06_rds_blocks.json') {
+      current.blocksPath = path
+    }
+
+    runsByPathway.set(pathwaySlug, current)
+  }
+
+  return [...runsByPathway.values()].sort((left, right) =>
+    formatPathwayName(left.pathwaySlug).localeCompare(formatPathwayName(right.pathwaySlug)),
+  )
 }
 
 function parseVersionTimestamp(version) {
@@ -107,6 +147,90 @@ async function fetchLatestCommitTimestamp(branch, path) {
   const commitDate = commits?.[0]?.commit?.committer?.date || commits?.[0]?.commit?.author?.date
   const timestamp = commitDate ? Date.parse(commitDate) : 0
   return Number.isFinite(timestamp) ? timestamp : 0
+}
+
+function deriveSectionHeadingFromHtml(html, fallback) {
+  const match = safeText(html).match(/<h[1-6][^>]*>(.*?)<\/h[1-6]>/i)
+  const heading = stripHtml(match?.[1] || '')
+  return heading || fallback
+}
+
+function renderRunBlockHtml(block) {
+  if (typeof block?.html === 'string' && block.html.trim()) {
+    return block.html
+  }
+
+  if (Array.isArray(block?.rules) && block.rules.length) {
+    return `<ul>${block.rules.map((rule) => `<li>${escapeHtml(rule)}</li>`).join('')}</ul>`
+  }
+
+  if (Array.isArray(block?.items) && block.items.length) {
+    return `<ul>${block.items.map((item) => `<li>${escapeHtml(item)}</li>`).join('')}</ul>`
+  }
+
+  if (typeof block?.content === 'string' && block.content.trim()) {
+    if (block.type === 'markdown') {
+      return marked.parse(block.content)
+    }
+
+    return `<p>${escapeHtml(block.content)}</p>`
+  }
+
+  return ''
+}
+
+function blocksToPathwayData(blocks) {
+  const renderedBlocks = (Array.isArray(blocks) ? blocks : [])
+    .map((block, index) => {
+      const html = renderRunBlockHtml(block)
+      const heading =
+        typeof block?.title === 'string' && block.title.trim()
+          ? block.title
+          : deriveSectionHeadingFromHtml(html, `Section ${index + 1}`)
+
+      return { heading, html }
+    })
+    .filter((section) => section.html.trim())
+
+  return {
+    summaryHtml: renderedBlocks[0]?.html || '',
+    sections: renderedBlocks.slice(1),
+  }
+}
+
+function markdownReviewPackToPathwayData(markdown) {
+  const content = safeText(markdown)
+  const matches = [...content.matchAll(/^##\s+(.+)$/gm)]
+
+  if (!matches.length) {
+    return {
+      summaryHtml: '',
+      sections: [],
+    }
+  }
+
+  const sections = matches.map((match, index) => {
+    const heading = safeText(match[1]).trim()
+    const start = match.index + match[0].length
+    const end = index + 1 < matches.length ? matches[index + 1].index : content.length
+    const body = content.slice(start, end).trim()
+    return { heading, body }
+  })
+
+  const backgroundSection = sections.find((section) => /page contents|background/i.test(section.heading))
+  const summaryHtml = backgroundSection ? marked.parse(backgroundSection.body) : ''
+  const accordionSections = sections
+    .filter((section) => section !== backgroundSection)
+    .map((section) => ({
+      heading: section.heading.replace(/^Accordion:\s*/i, '').trim(),
+      html: marked.parse(section.body),
+    }))
+    .filter((section) => section.html.trim())
+
+  return {
+    summaryHtml,
+    sections: accordionSections,
+  }
 }
 
 async function pickLatestBundles(paths, branch) {
@@ -201,10 +325,9 @@ async function discoverPathways() {
   const repository = await fetchJson(API_ROOT)
   const branch = repository.default_branch
   const tree = await fetchJson(`${API_ROOT}/git/trees/${branch}?recursive=1`)
-  const bundleCandidates = await pickLatestBundles(
-    tree.tree.filter((entry) => entry.type === 'blob').map((entry) => entry.path),
-    branch,
-  )
+  const blobPaths = tree.tree.filter((entry) => entry.type === 'blob').map((entry) => entry.path)
+  const bundleCandidates = await pickLatestBundles(blobPaths, branch)
+  const runCandidates = groupPathwayRuns(blobPaths)
 
   const pathwayResults = await Promise.all(
     bundleCandidates.map(async ({ pathwaySlug, version, bundlePath }) => {
@@ -244,7 +367,62 @@ async function discoverPathways() {
     }),
   )
 
-  return pathwayResults.filter(Boolean)
+  const canonicalPathways = pathwayResults.filter(Boolean)
+  const canonicalSlugs = new Set(canonicalPathways.map((pathway) => pathway.slug))
+
+  const runResults = await Promise.all(
+    runCandidates
+      .filter((candidate) => !canonicalSlugs.has(candidate.pathwaySlug))
+      .map(async ({ pathwaySlug, runSlug, blocksPath, reviewPackPath }) => {
+        try {
+          let reviewPack = ''
+          let summaryHtml = ''
+          let sections = []
+          let topic = formatPathwayName(pathwaySlug)
+
+          if (reviewPackPath) {
+            reviewPack = await fetchText(rawUrl(branch, reviewPackPath))
+          }
+
+          if (blocksPath) {
+            const blocksData = await fetchJson(rawUrl(branch, blocksPath))
+            const pathwayData = blocksToPathwayData(blocksData?.blocks)
+            summaryHtml = pathwayData.summaryHtml
+            sections = pathwayData.sections
+            if (typeof blocksData?.topic === 'string' && blocksData.topic.trim()) {
+              topic = blocksData.topic
+            }
+          }
+
+          if (!summaryHtml || !sections.length) {
+            const pathwayData = markdownReviewPackToPathwayData(reviewPack)
+            summaryHtml = summaryHtml || pathwayData.summaryHtml
+            sections = sections.length ? sections : pathwayData.sections
+          }
+
+          return {
+            id: pathwaySlug,
+            slug: pathwaySlug,
+            title: formatPathwayName(pathwaySlug),
+            topic,
+            version: 'draft',
+            summaryText: stripHtml(summaryHtml),
+            summaryHtml,
+            sections: normalizeSections(sections),
+            reviewPack: safeText(reviewPack),
+            rawBundlePath: blocksPath || reviewPackPath || `pathway_runs/${runSlug}`,
+            branch,
+          }
+        } catch (error) {
+          console.warn(`Skipping malformed pathway run: ${runSlug}`, error)
+          return null
+        }
+      }),
+  )
+
+  return [...canonicalPathways, ...runResults.filter(Boolean)].sort((left, right) =>
+    left.title.localeCompare(right.title),
+  )
 }
 
 function navigate(url) {
