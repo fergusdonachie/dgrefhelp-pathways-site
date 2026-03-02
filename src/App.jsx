@@ -233,48 +233,64 @@ function markdownReviewPackToPathwayData(markdown) {
   }
 }
 
-async function pickLatestBundles(paths, branch) {
-  const bundlesByPathway = groupBundlesByPathway(paths)
+async function sortBundleCandidates(candidates, branch) {
+  if (candidates.length <= 1) {
+    return candidates
+  }
 
-  const selectedBundles = await Promise.all(
-    [...bundlesByPathway.values()].map(async (candidates) => {
-      if (candidates.length === 1) {
-        return candidates[0]
-      }
+  const sortedCandidates = [...candidates].sort(compareByVersionName)
+  const needsCommitFallback = sortedCandidates.some((candidate, index) => {
+    if (index === 0) {
+      return !parseVersionTimestamp(candidate.version)
+    }
 
-      const sortedCandidates = [...candidates].sort(compareByVersionName)
-      const [first, second] = sortedCandidates
-      const firstParsed = parseVersionTimestamp(first.version)
-      const secondParsed = parseVersionTimestamp(second.version)
+    const previous = sortedCandidates[index - 1]
+    const candidateParsed = parseVersionTimestamp(candidate.version)
+    const previousParsed = parseVersionTimestamp(previous.version)
 
-      if (
-        firstParsed &&
-        secondParsed &&
-        (firstParsed.sortValue !== secondParsed.sortValue || firstParsed.revision !== secondParsed.revision)
-      ) {
-        return first
-      }
+    if (!candidateParsed || !previousParsed) {
+      return true
+    }
 
-      const commitTimes = await Promise.all(
-        sortedCandidates.map(async (candidate) => ({
-          candidate,
-          commitTimestamp: await fetchLatestCommitTimestamp(branch, candidate.bundlePath),
-        })),
-      )
+    return (
+      candidateParsed.sortValue === previousParsed.sortValue &&
+      candidateParsed.revision === previousParsed.revision
+    )
+  })
 
-      commitTimes.sort((left, right) => {
-        if (right.commitTimestamp !== left.commitTimestamp) {
-          return right.commitTimestamp - left.commitTimestamp
-        }
+  if (!needsCommitFallback) {
+    return sortedCandidates
+  }
 
-        return compareByVersionName(left.candidate, right.candidate)
-      })
-
-      return commitTimes[0].candidate
-    }),
+  const commitTimes = await Promise.all(
+    sortedCandidates.map(async (candidate) => ({
+      ...candidate,
+      commitTimestamp: await fetchLatestCommitTimestamp(branch, candidate.bundlePath),
+    })),
   )
 
-  return selectedBundles.sort((left, right) =>
+  commitTimes.sort((left, right) => {
+    if (right.commitTimestamp !== left.commitTimestamp) {
+      return right.commitTimestamp - left.commitTimestamp
+    }
+
+    return compareByVersionName(left, right)
+  })
+
+  return commitTimes
+}
+
+async function loadBundleGroups(paths, branch) {
+  const bundlesByPathway = groupBundlesByPathway(paths)
+
+  const groupedCandidates = await Promise.all(
+    [...bundlesByPathway.entries()].map(async ([pathwaySlug, candidates]) => ({
+      pathwaySlug,
+      candidates: await sortBundleCandidates(candidates, branch),
+    })),
+  )
+
+  return groupedCandidates.sort((left, right) =>
     formatPathwayName(left.pathwaySlug).localeCompare(formatPathwayName(right.pathwaySlug)),
   )
 }
@@ -337,15 +353,30 @@ function parseLocation() {
 
   if (segments[0] === 'pathway' && segments[1]) {
     const view = searchParams.get('view') === 'evidence' ? 'evidence' : 'pathway'
-    return { page: 'pathway', slug: decodeURIComponent(segments[1]), view }
+    return {
+      page: 'pathway',
+      slug: decodeURIComponent(segments[1]),
+      version: searchParams.get('version') || '',
+      view,
+    }
   }
 
   return { page: 'home', view: 'pathway' }
 }
 
-function makePathwayUrl(slug, view = 'pathway') {
-  const search = view === 'evidence' ? '?view=evidence' : ''
-  return `/pathway/${encodeURIComponent(slug)}${search}`
+function makePathwayUrl(slug, version = '', view = 'pathway') {
+  const searchParams = new URLSearchParams()
+
+  if (version) {
+    searchParams.set('version', version)
+  }
+
+  if (view === 'evidence') {
+    searchParams.set('view', 'evidence')
+  }
+
+  const search = searchParams.toString()
+  return `/pathway/${encodeURIComponent(slug)}${search ? `?${search}` : ''}`
 }
 
 async function discoverPathways() {
@@ -353,44 +384,64 @@ async function discoverPathways() {
   const branch = repository.default_branch
   const tree = await fetchJson(`${API_ROOT}/git/trees/${branch}?recursive=1`)
   const blobPaths = tree.tree.filter((entry) => entry.type === 'blob').map((entry) => entry.path)
-  const bundleCandidates = await pickLatestBundles(blobPaths, branch)
+  const bundleGroups = await loadBundleGroups(blobPaths, branch)
   const runCandidates = groupPathwayRuns(blobPaths)
 
   const pathwayResults = await Promise.all(
-    bundleCandidates.map(async ({ pathwaySlug, version, bundlePath }) => {
-      try {
-        const bundle = await fetchJson(rawUrl(branch, bundlePath))
-        const reviewPackPath = `pathways/${pathwaySlug}/${version}/drafts/review-pack.md`
-        let reviewPack = ''
+    bundleGroups.map(async ({ pathwaySlug, candidates }) => {
+      const versions = (
+        await Promise.all(
+          candidates.map(async ({ version, bundlePath }) => {
+            try {
+              const bundle = await fetchJson(rawUrl(branch, bundlePath))
+              const reviewPackPath = `pathways/${pathwaySlug}/${version}/drafts/review-pack.md`
+              let reviewPack = ''
 
-        try {
-          reviewPack = await fetchText(rawUrl(branch, reviewPackPath))
-        } catch {
-          reviewPack = ''
-        }
+              try {
+                reviewPack = await fetchText(rawUrl(branch, reviewPackPath))
+              } catch {
+                reviewPack = ''
+              }
 
-        const resolvedContent = await resolveBundleContent(branch, bundle)
-        const summaryHtml = resolvedContent.summaryHtml
-        const sections = resolvedContent.sections
+              const resolvedContent = await resolveBundleContent(branch, bundle)
+              const summaryHtml = resolvedContent.summaryHtml
+              const sections = resolvedContent.sections
 
-        return {
-          id: pathwaySlug,
-          slug: pathwaySlug,
-          title: formatPathwayName(pathwaySlug),
-          topic: typeof bundle?.topic === 'string' && bundle.topic.trim()
-            ? bundle.topic
-            : formatPathwayName(pathwaySlug),
-          version,
-          summaryText: stripHtml(summaryHtml),
-          summaryHtml,
-          sections,
-          reviewPack: safeText(reviewPack),
-          rawBundlePath: bundlePath,
-          branch,
-        }
-      } catch (error) {
-        console.warn(`Skipping malformed pathway bundle: ${bundlePath}`, error)
+              return {
+                id: `${pathwaySlug}:${version}`,
+                slug: pathwaySlug,
+                title: formatPathwayName(pathwaySlug),
+                topic:
+                  typeof bundle?.topic === 'string' && bundle.topic.trim()
+                    ? bundle.topic
+                    : formatPathwayName(pathwaySlug),
+                version,
+                summaryText: stripHtml(summaryHtml),
+                summaryHtml,
+                sections,
+                reviewPack: safeText(reviewPack),
+                rawBundlePath: bundlePath,
+                branch,
+              }
+            } catch (error) {
+              console.warn(`Skipping malformed pathway bundle: ${bundlePath}`, error)
+              return null
+            }
+          }),
+        )
+      ).filter(Boolean)
+
+      if (!versions.length) {
         return null
+      }
+
+      return {
+        id: pathwaySlug,
+        slug: pathwaySlug,
+        title: formatPathwayName(pathwaySlug),
+        topic: versions[0].topic,
+        summaryText: versions[0].summaryText,
+        versions,
       }
     }),
   )
@@ -433,13 +484,22 @@ async function discoverPathways() {
             slug: pathwaySlug,
             title: formatPathwayName(pathwaySlug),
             topic,
-            version: 'draft',
             summaryText: stripHtml(summaryHtml),
-            summaryHtml,
-            sections: normalizeSections(sections),
-            reviewPack: safeText(reviewPack),
-            rawBundlePath: blocksPath || reviewPackPath || `pathway_runs/${runSlug}`,
-            branch,
+            versions: [
+              {
+                id: `${pathwaySlug}:draft`,
+                slug: pathwaySlug,
+                title: formatPathwayName(pathwaySlug),
+                topic,
+                version: 'draft',
+                summaryText: stripHtml(summaryHtml),
+                summaryHtml,
+                sections: normalizeSections(sections),
+                reviewPack: safeText(reviewPack),
+                rawBundlePath: blocksPath || reviewPackPath || `pathway_runs/${runSlug}`,
+                branch,
+              },
+            ],
           }
         } catch (error) {
           console.warn(`Skipping malformed pathway run: ${runSlug}`, error)
@@ -517,7 +577,7 @@ function HomePage({ pathways, onOpenPathway }) {
     }
 
     return pathways.filter((pathway) =>
-      [pathway.title, pathway.topic, pathway.summaryText].some((field) =>
+      [pathway.title, pathway.topic, pathway.summaryText, ...pathway.versions.map((version) => version.version)].some((field) =>
         safeText(field).toLowerCase().includes(normalizedQuery),
       ),
     )
@@ -577,15 +637,26 @@ function HomePage({ pathways, onOpenPathway }) {
 
         <div className="directory-grid">
           {filteredPathways.map((pathway) => (
-            <button
-              className="directory-item"
-              key={pathway.id}
-              onClick={() => onOpenPathway(pathway.slug)}
-              type="button"
-            >
-              <span className="directory-title">{pathway.title}</span>
-              <span className="directory-arrow">Open</span>
-            </button>
+            <article className="directory-item" key={pathway.id}>
+              <div className="directory-item-head">
+                <span className="directory-title">{pathway.title}</span>
+                <span className="directory-meta">
+                  {pathway.versions.length} version{pathway.versions.length === 1 ? '' : 's'}
+                </span>
+              </div>
+              <div className="version-list">
+                {pathway.versions.map((version) => (
+                  <button
+                    className="version-chip"
+                    key={version.id}
+                    onClick={() => onOpenPathway(pathway.slug, version.version)}
+                    type="button"
+                  >
+                    {version.version}
+                  </button>
+                ))}
+              </div>
+            </article>
           ))}
         </div>
 
@@ -599,16 +670,18 @@ function HomePage({ pathways, onOpenPathway }) {
 
 function DetailPage({
   activePathway,
+  activeVersion,
   activeView,
   activeReviewHtml,
   copiedSection,
   onBack,
   onChangeView,
+  onChangeVersion,
   onCopySection,
   openSections,
   onToggleSection,
 }) {
-  const sectionState = openSections[activePathway.id] || {}
+  const sectionState = openSections[activeVersion.id] || {}
 
   return (
     <>
@@ -623,6 +696,19 @@ function DetailPage({
         </div>
 
         <div className="detail-actions">
+          <div className="detail-controls">
+            <div className="version-switcher" aria-label="Pathway versions">
+              {activePathway.versions.map((version) => (
+                <button
+                  className={`version-tab ${version.version === activeVersion.version ? 'active' : ''}`}
+                  key={version.id}
+                  onClick={() => onChangeVersion(version.version)}
+                  type="button"
+                >
+                  {version.version}
+                </button>
+              ))}
+            </div>
           <div className="view-switcher" role="tablist" aria-label="Pathway views">
             <button
               aria-selected={activeView === 'pathway'}
@@ -643,10 +729,11 @@ function DetailPage({
               Evidence
             </button>
           </div>
+          </div>
 
           <a
             className="source-link"
-            href={rawUrl(activePathway.branch, activePathway.rawBundlePath)}
+            href={rawUrl(activeVersion.branch, activeVersion.rawBundlePath)}
             target="_blank"
             rel="noreferrer"
           >
@@ -660,16 +747,16 @@ function DetailPage({
           <section className="sections-panel">
             <div className="section-stack">
               <StaticSectionCard
-                copied={copiedSection === `${activePathway.id}:Background`}
+                copied={copiedSection === `${activeVersion.id}:Background`}
                 heading="Background"
-                html={activePathway.summaryHtml}
-                onCopy={() => onCopySection(`${activePathway.id}:Background`, activePathway.summaryHtml)}
+                html={activeVersion.summaryHtml}
+                onCopy={() => onCopySection(`${activeVersion.id}:Background`, activeVersion.summaryHtml)}
               />
-              {activePathway.sections.map((section) => (
+              {activeVersion.sections.map((section) => (
                 <SectionCard
-                  copied={copiedSection === `${activePathway.id}:${section.heading}`}
+                  copied={copiedSection === `${activeVersion.id}:${section.heading}`}
                   key={section.heading}
-                  onCopy={() => onCopySection(`${activePathway.id}:${section.heading}`, section.html)}
+                  onCopy={() => onCopySection(`${activeVersion.id}:${section.heading}`, section.html)}
                   section={section}
                   isOpen={Boolean(sectionState[section.heading])}
                   onToggle={() => onToggleSection(section.heading)}
@@ -754,57 +841,69 @@ function App() {
     return pathways.find((pathway) => pathway.slug === route.slug) ?? null
   }, [pathways, route])
 
-  useEffect(() => {
+  const activeVersion = useMemo(() => {
     if (!activePathway) {
+      return null
+    }
+
+    return (
+      activePathway.versions.find((version) => version.version === route.version) ||
+      activePathway.versions[0] ||
+      null
+    )
+  }, [activePathway, route.version])
+
+  useEffect(() => {
+    if (!activeVersion) {
       return
     }
 
     setOpenSections((current) => {
-      if (current[activePathway.id]) {
+      if (current[activeVersion.id]) {
         return current
       }
 
       return {
         ...current,
-        [activePathway.id]: activePathway.sections.reduce((accumulator, section, index) => {
+        [activeVersion.id]: activeVersion.sections.reduce((accumulator, section, index) => {
           accumulator[section.heading] = index < 2
           return accumulator
         }, {}),
       }
     })
-  }, [activePathway])
+  }, [activeVersion])
 
   useEffect(() => {
-    if (route.page === 'pathway' && activePathway) {
-      document.title = `${activePathway.title} | DG RefHelp Pathways`
+    if (route.page === 'pathway' && activePathway && activeVersion) {
+      document.title = `${activePathway.title} ${activeVersion.version} | DG RefHelp Pathways`
       return
     }
 
     document.title = 'DG RefHelp Pathways'
-  }, [activePathway, route.page])
+  }, [activePathway, activeVersion, route.page])
 
   const activeReviewHtml = useMemo(() => {
-    if (!activePathway?.reviewPack) {
+    if (!activeVersion?.reviewPack) {
       return ''
     }
 
-    return DOMPurify.sanitize(marked.parse(activePathway.reviewPack))
-  }, [activePathway])
+    return DOMPurify.sanitize(marked.parse(activeVersion.reviewPack))
+  }, [activeVersion])
 
-  function openPathway(slug, view = 'pathway') {
-    navigate(makePathwayUrl(slug, view))
+  function openPathway(slug, version = '', view = 'pathway') {
+    navigate(makePathwayUrl(slug, version, view))
   }
 
   function toggleSection(heading) {
-    if (!activePathway) {
+    if (!activeVersion) {
       return
     }
 
     setOpenSections((current) => ({
       ...current,
-      [activePathway.id]: {
-        ...current[activePathway.id],
-        [heading]: !current[activePathway.id]?.[heading],
+      [activeVersion.id]: {
+        ...current[activeVersion.id],
+        [heading]: !current[activeVersion.id]?.[heading],
       },
     }))
   }
@@ -842,14 +941,16 @@ function App() {
           <HomePage pathways={pathways} onOpenPathway={openPathway} />
         ) : null}
 
-        {status.type === 'ready' && route.page === 'pathway' && activePathway ? (
+        {status.type === 'ready' && route.page === 'pathway' && activePathway && activeVersion ? (
           <DetailPage
             activePathway={activePathway}
+            activeVersion={activeVersion}
             activeReviewHtml={activeReviewHtml}
             activeView={route.view}
             copiedSection={copiedSection}
             onBack={() => navigate('/')}
-            onChangeView={(view) => openPathway(activePathway.slug, view)}
+            onChangeVersion={(version) => openPathway(activePathway.slug, version, route.view)}
+            onChangeView={(view) => openPathway(activePathway.slug, activeVersion.version, view)}
             onCopySection={handleCopySection}
             onToggleSection={toggleSection}
             openSections={openSections}

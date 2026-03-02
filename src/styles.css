@@ -252,18 +252,14 @@ input {
 }
 
 .directory-item {
-  width: 100%;
-  display: flex;
-  justify-content: space-between;
-  align-items: center;
-  gap: 18px;
+  display: grid;
+  gap: 14px;
   padding: 18px 20px;
   border-radius: var(--radius-lg);
   border: 1px solid rgba(255, 255, 255, 0.08);
   background: var(--bg-soft);
   color: var(--text);
   text-align: left;
-  cursor: pointer;
   transition:
     transform 180ms ease,
     border-color 180ms ease,
@@ -281,9 +277,42 @@ input {
   font-weight: 700;
 }
 
-.directory-arrow {
+.directory-item-head {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  gap: 16px;
+}
+
+.directory-meta {
   color: var(--text-dim);
   white-space: nowrap;
+}
+
+.version-list {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 10px;
+}
+
+.version-chip,
+.version-tab {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  padding: 9px 12px;
+  border-radius: 999px;
+  border: 1px solid rgba(255, 255, 255, 0.09);
+  background: rgba(255, 255, 255, 0.05);
+  color: var(--text-dim);
+  cursor: pointer;
+  white-space: nowrap;
+}
+
+.version-chip:hover,
+.version-tab:hover {
+  border-color: rgba(255, 155, 99, 0.34);
+  color: var(--text);
 }
 
 .detail-hero {
@@ -327,8 +356,15 @@ input {
   align-items: center;
 }
 
+.detail-controls {
+  display: grid;
+  gap: 12px;
+}
+
+.version-switcher,
 .view-switcher {
   display: inline-flex;
+  flex-wrap: wrap;
   gap: 10px;
   padding: 6px;
   border-radius: 999px;
@@ -336,11 +372,12 @@ input {
   border: 1px solid rgba(255, 255, 255, 0.08);
 }
 
+.version-tab,
 .view-tab {
   padding: 10px 16px;
-  cursor: pointer;
 }
 
+.version-tab.active,
 .view-tab.active {
   color: var(--text);
   background: rgba(255, 155, 99, 0.14);
@@ -554,6 +591,11 @@ input {
     align-items: stretch;
   }
 
+  .directory-item-head {
+    flex-direction: column;
+    align-items: start;
+  }
+
   .search-shell {
     min-width: 100%;
   }
@@ -562,10 +604,12 @@ input {
     grid-template-columns: 1fr;
   }
 
+  .version-switcher,
   .view-switcher {
     width: 100%;
   }
 
+  .version-tab,
   .view-tab {
     flex: 1;
   }
