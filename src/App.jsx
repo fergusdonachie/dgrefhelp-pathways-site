@@ -303,6 +303,33 @@ function rawUrl(branch, path) {
   return `https://raw.githubusercontent.com/${REPO_OWNER}/${REPO_NAME}/${branch}/${path}`
 }
 
+async function resolveBundleContent(branch, bundle) {
+  let summaryHtml = safeText(bundle?.page_contents_html)
+  let sections = normalizeSections(bundle?.accordion_sections)
+
+  if (!summaryHtml && typeof bundle?.page_contents_html_path === 'string') {
+    try {
+      summaryHtml = await fetchText(rawUrl(branch, bundle.page_contents_html_path))
+    } catch {
+      summaryHtml = ''
+    }
+  }
+
+  if (!sections.length && typeof bundle?.accordion_sections_json_path === 'string') {
+    try {
+      const sectionData = await fetchJson(rawUrl(branch, bundle.accordion_sections_json_path))
+      sections = normalizeSections(sectionData?.accordion_sections || sectionData)
+    } catch {
+      sections = []
+    }
+  }
+
+  return {
+    summaryHtml,
+    sections,
+  }
+}
+
 function parseLocation() {
   const { pathname, search } = window.location
   const segments = pathname.replace(/^\/+|\/+$/g, '').split('/').filter(Boolean)
@@ -342,8 +369,9 @@ async function discoverPathways() {
           reviewPack = ''
         }
 
-        const summaryHtml = safeText(bundle?.page_contents_html)
-        const sections = normalizeSections(bundle?.accordion_sections)
+        const resolvedContent = await resolveBundleContent(branch, bundle)
+        const summaryHtml = resolvedContent.summaryHtml
+        const sections = resolvedContent.sections
 
         return {
           id: pathwaySlug,
