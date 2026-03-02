@@ -18,8 +18,28 @@ function formatPathwayName(slug) {
     .join(' ')
 }
 
+function safeText(value) {
+  return typeof value === 'string' ? value : ''
+}
+
 function stripHtml(html) {
-  return html.replace(/<[^>]*>/g, ' ').replace(/\s+/g, ' ').trim()
+  return safeText(html).replace(/<[^>]*>/g, ' ').replace(/\s+/g, ' ').trim()
+}
+
+function normalizeSections(sections) {
+  if (!Array.isArray(sections)) {
+    return []
+  }
+
+  return sections
+    .map((section, index) => ({
+      heading:
+        typeof section?.heading === 'string' && section.heading.trim()
+          ? section.heading
+          : `Section ${index + 1}`,
+      html: safeText(section?.html),
+    }))
+    .filter((section) => section.html.trim())
 }
 
 function pickLatestBundles(paths) {
@@ -94,37 +114,45 @@ async function discoverPathways() {
     tree.tree.filter((entry) => entry.type === 'blob').map((entry) => entry.path),
   )
 
-  const pathways = await Promise.all(
+  const pathwayResults = await Promise.all(
     bundleCandidates.map(async ({ pathwaySlug, version, bundlePath }) => {
-      const bundle = await fetchJson(rawUrl(branch, bundlePath))
-      const reviewPackPath = `pathways/${pathwaySlug}/${version}/drafts/review-pack.md`
-      let reviewPack = ''
-
       try {
-        reviewPack = await fetchText(rawUrl(branch, reviewPackPath))
-      } catch {
-        reviewPack = ''
-      }
+        const bundle = await fetchJson(rawUrl(branch, bundlePath))
+        const reviewPackPath = `pathways/${pathwaySlug}/${version}/drafts/review-pack.md`
+        let reviewPack = ''
 
-      const summaryText = stripHtml(bundle.page_contents_html)
+        try {
+          reviewPack = await fetchText(rawUrl(branch, reviewPackPath))
+        } catch {
+          reviewPack = ''
+        }
 
-      return {
-        id: pathwaySlug,
-        slug: pathwaySlug,
-        title: formatPathwayName(pathwaySlug),
-        topic: bundle.topic || formatPathwayName(pathwaySlug),
-        version,
-        summaryText,
-        summaryHtml: bundle.page_contents_html,
-        sections: bundle.accordion_sections,
-        reviewPack,
-        rawBundlePath: bundlePath,
-        branch,
+        const summaryHtml = safeText(bundle?.page_contents_html)
+        const sections = normalizeSections(bundle?.accordion_sections)
+
+        return {
+          id: pathwaySlug,
+          slug: pathwaySlug,
+          title: formatPathwayName(pathwaySlug),
+          topic: typeof bundle?.topic === 'string' && bundle.topic.trim()
+            ? bundle.topic
+            : formatPathwayName(pathwaySlug),
+          version,
+          summaryText: stripHtml(summaryHtml),
+          summaryHtml,
+          sections,
+          reviewPack: safeText(reviewPack),
+          rawBundlePath: bundlePath,
+          branch,
+        }
+      } catch (error) {
+        console.warn(`Skipping malformed pathway bundle: ${bundlePath}`, error)
+        return null
       }
     }),
   )
 
-  return pathways
+  return pathwayResults.filter(Boolean)
 }
 
 function navigate(url) {
@@ -192,7 +220,7 @@ function HomePage({ pathways, onOpenPathway }) {
 
     return pathways.filter((pathway) =>
       [pathway.title, pathway.topic, pathway.summaryText].some((field) =>
-        field.toLowerCase().includes(normalizedQuery),
+        safeText(field).toLowerCase().includes(normalizedQuery),
       ),
     )
   }, [pathways, query])
