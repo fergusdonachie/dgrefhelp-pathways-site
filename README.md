@@ -37,6 +37,10 @@ Recommended settings:
 
 No environment variables are required.
 
+Recommended for production:
+
+- `GITHUB_TOKEN` - a GitHub personal access token with read access to the content repository, used by the Vercel serverless function to avoid GitHub API rate limits.
+
 ## Content model
 
 At runtime the app:
