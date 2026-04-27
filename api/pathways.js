@@ -285,7 +285,7 @@ async function discoverPathways() {
 }
 
 export default async function handler(request, response) {
-  response.setHeader('Cache-Control', 's-maxage=3600, stale-while-revalidate=86400')
+  response.setHeader('Cache-Control', 's-maxage=30, stale-while-revalidate=86400')
 
   try {
     const pathways = await discoverPathways()
