@@ -522,6 +522,26 @@ input {
   color: var(--accent-soft);
 }
 
+/* DGRefHelp snippets use light inline backgrounds (#e5f0f9 etc.) and assume
+   dark page text; force dark text inside them so they read on the dark theme.
+   Elements with their own inline color (e.g. badge spans) still win. */
+.rich-copy [style*="background"],
+.rich-copy [style*="background"] p,
+.rich-copy [style*="background"] li,
+.rich-copy [style*="background"] strong,
+.rich-copy [style*="background"] h1,
+.rich-copy [style*="background"] h2,
+.rich-copy [style*="background"] h3,
+.rich-copy [style*="background"] h4,
+.rich-copy [style*="background"] h5,
+.rich-copy [style*="background"] em {
+  color: #1f2a33;
+}
+
+.rich-copy [style*="background"] a {
+  color: #0b5fa5;
+}
+
 .evidence-layout {
   grid-template-columns: 1fr;
 }
